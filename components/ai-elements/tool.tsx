@@ -17,18 +17,23 @@ import {
   XCircleIcon,
 } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
-import { isValidElement } from "react";
+import { isValidElement, useState } from "react";
 
 import { CodeBlock } from "./code-block";
 
 export type ToolProps = ComponentProps<typeof Collapsible>;
 
-export const Tool = ({ className, ...props }: ToolProps) => (
-  <Collapsible
-    className={cn("group not-prose mb-4 w-full rounded-md border", className)}
-    {...props}
-  />
-);
+export const Tool = ({ className, defaultOpen, ...props }: ToolProps) => {
+  const [initialDefaultOpen] = useState(defaultOpen);
+
+  return (
+    <Collapsible
+      className={cn("group not-prose mb-4 w-full rounded-md border", className)}
+      defaultOpen={initialDefaultOpen}
+      {...props}
+    />
+  );
+};
 
 export type ToolPart = ToolUIPart | DynamicToolUIPart;
 
