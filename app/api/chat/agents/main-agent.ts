@@ -37,7 +37,7 @@ export const mainAgent = new ToolLoopAgent({
     testops_create_testcase: testopsCreateTestcase,
     testops_bulk_create_smoke_suite: testopsBulkCreateSmokeSuite,
   },
-  stopWhen: stepCountIs(5),
+  stopWhen: stepCountIs(10),
   providerOptions: {
     openai: { store: false },
   },

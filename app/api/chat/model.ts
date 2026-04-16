@@ -1,15 +1,18 @@
-import { createOpenAI } from '@ai-sdk/openai';
+import { createOpenAI } from "@ai-sdk/openai";
 
-export const openai = createOpenAI({
-  baseURL: 'https://api.proxyapi.ru/openai/v1',
-  apiKey:
-    'sk-D21V3Vy0Qk83VMiJ2ZmBQFni3W0clD8l',
+const baseUrl = process.env.CHAT_MODEL_BASE_URL?.trim();
+const apiKey = process.env.CHAT_MODEL_API_KEY?.trim();
+const modelName = process.env.CHAT_MODEL_NAME?.trim();
+
+if (!baseUrl || !apiKey || !modelName) {
+  throw new Error(
+    "Model env is not configured. Required: CHAT_MODEL_BASE_URL, CHAT_MODEL_API_KEY, CHAT_MODEL_NAME",
+  );
+}
+
+const openai = createOpenAI({
+  baseURL: baseUrl,
+  apiKey: apiKey.replace(/^Bearer\s+/i, ""),
 });
 
-// export const openai = createOpenAI({
-//   baseURL: 'https://bothub.chat/api/v2/openai/v1',
-//   apiKey:
-//     'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjQyOWM4MDY1LTFhZjctNDg5OS1iODBjLWI4YjUzZWM0ZGE3ZiIsImlzRGV2ZWxvcGVyIjp0cnVlLCJpYXQiOjE3NjQ3NTk0MDEsImV4cCI6MjA4MDMzNTQwMX0.vnMPLvnwD3jOE3xQ2EWZFU8HucUupi4stBhXlm7pbYQ',
-// });
-
-export const model = openai('gpt-5.3-codex');
+export const model = openai(modelName);

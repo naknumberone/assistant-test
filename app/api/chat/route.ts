@@ -2,7 +2,7 @@ import {
   consumeStream,
   createAgentUIStreamResponse,
   createIdGenerator,
-  InferAgentUIMessage,
+  UIMessage,
   safeValidateUIMessages,
 } from 'ai';
 import { mainAgent } from './agents/main-agent';
@@ -10,7 +10,21 @@ import { loadChat, saveChat } from '@/lib/chat-store';
 
 export const runtime = 'nodejs';
 
-type ChatMessage = InferAgentUIMessage<typeof mainAgent>;
+type ChatMessage = UIMessage;
+
+function upsertIncomingMessage(
+  previousMessages: UIMessage[],
+  message?: UIMessage,
+): UIMessage[] {
+  if (!message) return previousMessages;
+
+  const existingIndex = previousMessages.findIndex((m) => m.id === message.id);
+  if (existingIndex === -1) return [...previousMessages, message];
+
+  const next = previousMessages.slice();
+  next[existingIndex] = message;
+  return next;
+}
 
 export async function POST(req: Request) {
   const {
@@ -26,13 +40,17 @@ export async function POST(req: Request) {
   }
 
   const previousMessages = await loadChat(id);
-  const rawMessages = message != null
-    ? [...previousMessages, message]
-    : previousMessages;
+
+  if (!previousMessages) {
+    return Response.json({ error: 'Chat not found' }, { status: 404 });
+  }
+
+  const rawMessages = upsertIncomingMessage(previousMessages, message);
 
   const result = await safeValidateUIMessages<ChatMessage>({
     messages: rawMessages,
   });
+
   const uiMessages = result.success ? result.data : [];
 
   return createAgentUIStreamResponse({

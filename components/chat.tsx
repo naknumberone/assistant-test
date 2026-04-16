@@ -47,24 +47,20 @@ import {
   ReasoningTrigger,
 } from '@/components/ai-elements/reasoning';
 import {
-  Source,
-  Sources,
-  SourcesContent,
-  SourcesTrigger,
-} from '@/components/ai-elements/sources';
-import {
   Tool,
   ToolContent,
   ToolHeader,
   ToolInput,
   ToolOutput,
 } from '@/components/ai-elements/tool';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useChat } from '@ai-sdk/react';
 import {
   DefaultChatTransport,
   getToolName,
   isFileUIPart,
   isReasoningUIPart,
+  isTextUIPart,
   isToolUIPart,
   lastAssistantMessageIsCompleteWithApprovalResponses,
   type UIMessage,
@@ -72,6 +68,22 @@ import {
   type DynamicToolUIPart,
 } from 'ai';
 import { MessageSquareIcon } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { useEffect } from 'react';
+
+const CHAT_NOT_FOUND = 'CHAT_NOT_FOUND';
+
+async function fetchChatMessages(id: string): Promise<UIMessage[]> {
+  const res = await fetch(`/api/chats/${id}`);
+  if (res.status === 404) {
+    throw new Error(CHAT_NOT_FOUND);
+  }
+  if (!res.ok) {
+    throw new Error('Failed to load chat');
+  }
+  const data = (await res.json()) as { messages: UIMessage[] };
+  return data.messages;
+}
 
 type ToolApprovalResponse = {
   id: string;
@@ -235,34 +247,57 @@ function MessageParts({
           );
         }
 
-        switch (part.type) {
-          case 'text':
-            return <MessageResponse key={key}>{part.text}</MessageResponse>;
-          case 'reasoning':
-          case 'step-start':
-          case 'source-url':
-          case 'file':
-          case 'source-document':
-            return null;
-          default:
-            return null;
+        if (isTextUIPart(part)) {
+          return <MessageResponse key={key}>{part.text}</MessageResponse>;
         }
+
+        return null;
       })}
     </>
   );
 }
 
-export default function Chat({
+export default function Chat({ id }: { id: string }) {
+  const router = useRouter();
+
+  const { data, isLoading, isError, error } = useQuery<UIMessage[]>({
+    queryKey: ['chat', id],
+    queryFn: () => fetchChatMessages(id),
+    retry: (failureCount, err) => {
+      if (err instanceof Error && err.message === CHAT_NOT_FOUND) return false;
+      return failureCount < 3;
+    },
+  });
+
+  useEffect(() => {
+    if (isError && error instanceof Error && error.message === CHAT_NOT_FOUND) {
+      router.replace('/chat');
+    }
+  }, [isError, error, router]);
+
+  if (isLoading || !data) {
+    return <main className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col" />;
+  }
+
+  return <ChatView id={id} initialMessages={data} />;
+}
+
+function ChatView({
   id,
   initialMessages,
 }: {
   id: string;
   initialMessages: UIMessage[];
 }) {
+  const queryClient = useQueryClient();
+
   const { messages, sendMessage, status, stop, addToolApprovalResponse } =
     useChat({
       id,
       messages: initialMessages,
+      onFinish: () => {
+        void queryClient.invalidateQueries({ queryKey: ['chats'] });
+      },
       sendAutomaticallyWhen: ({ messages }) =>
         lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),
       transport: new DefaultChatTransport({
@@ -296,7 +331,7 @@ export default function Chat({
   }
 
   return (
-    <main className="mx-auto flex h-dvh w-full max-w-4xl flex-col">
+    <main className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col">
       <Conversation className="min-h-0 flex-1 [scrollbar-gutter:stable]">
         <ConversationContent className="px-4 py-6 pr-6">
           {messages.length === 0 ? (
@@ -306,39 +341,16 @@ export default function Chat({
               title="Чат готов"
             />
           ) : (
-            messages.map((message) => {
-              const sourceParts = message.parts.filter(
-                (
-                  part,
-                ): part is Extract<UIMessage['parts'][number], { type: 'source-url' }> =>
-                  part.type === 'source-url',
-              );
-
-              return (
-                <Message from={message.role} key={message.id}>
-                  {message.role === 'assistant' && sourceParts.length > 0 ?
-                    <Sources>
-                      <SourcesTrigger count={sourceParts.length} />
-                      <SourcesContent>
-                        {sourceParts.map((source) => (
-                          <Source
-                            href={source.url}
-                            key={`${message.id}-${source.sourceId}`}
-                            title={source.title ?? source.url}
-                          />
-                        ))}
-                      </SourcesContent>
-                    </Sources>
-                  : null}
-                  <MessageContent>
-                    <MessageParts
-                      message={message}
-                      onToolApprovalResponse={addToolApprovalResponse}
-                    />
-                  </MessageContent>
-                </Message>
-              );
-            })
+            messages.map((message) => (
+              <Message from={message.role} key={message.id}>
+                <MessageContent>
+                  <MessageParts
+                    message={message}
+                    onToolApprovalResponse={addToolApprovalResponse}
+                  />
+                </MessageContent>
+              </Message>
+            ))
           )}
         </ConversationContent>
         <ConversationScrollButton />
