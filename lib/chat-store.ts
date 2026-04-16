@@ -111,8 +111,12 @@ export async function listChats(): Promise<{ id: string; title: string }[]> {
     files
       .filter((file) => file.endsWith(".json"))
       .map(async (file) => {
+        const filePath = path.join(CHATS_DIR, file);
         try {
-          const raw = await fs.readFile(path.join(CHATS_DIR, file), "utf8");
+          const [raw, stat] = await Promise.all([
+            fs.readFile(filePath, "utf8"),
+            fs.stat(filePath),
+          ]);
           const record = JSON.parse(raw) as Partial<ChatRecord>;
 
           return {
@@ -124,6 +128,7 @@ export async function listChats(): Promise<{ id: string; title: string }[]> {
               typeof record.title === "string" && record.title.trim()
                 ? record.title
                 : DEFAULT_TITLE,
+            mtimeMs: stat.mtimeMs,
           };
         } catch {
           return null;
@@ -131,5 +136,11 @@ export async function listChats(): Promise<{ id: string; title: string }[]> {
       }),
   );
 
-  return chats.filter((chat): chat is { id: string; title: string } => Boolean(chat));
+  return chats
+    .filter(
+      (chat): chat is { id: string; title: string; mtimeMs: number } =>
+        Boolean(chat),
+    )
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .map(({ id, title }) => ({ id, title }));
 }
