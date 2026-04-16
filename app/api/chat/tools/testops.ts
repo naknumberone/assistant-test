@@ -55,6 +55,17 @@ export const testopsCreateTestcase = tool({
   },
 });
 
+export const testopsCreateDefect = tool({
+  description:
+    'Create a defect in TestOps. Accepts { name } and returns the created defect.',
+  inputSchema: z.object({
+    name: z.string().describe('Name of the defect'),
+  }),
+  execute: async (): Promise<{ id: string; name: string }> => {
+    throw new Error(`Это захардкоженный еррор при выполнении тула`);
+  },
+});
+
 export const testopsBulkCreateSmokeSuite = tool({
   description:
     'Bulk-create smoke test cases for a feature. This is a mutating operation and must be user-approved.',

@@ -3,6 +3,7 @@ import { model } from '../model';
 import { weather } from '../tools/weather';
 import {
   testopsBulkCreateSmokeSuite,
+  testopsCreateDefect,
   testopsFindTestcases,
   testopsCreateTestcase,
 } from '../tools/testops';
@@ -35,6 +36,7 @@ export const mainAgent = new ToolLoopAgent({
     runTestOpsAgent,
     testops_find_testcases: testopsFindTestcases,
     testops_create_testcase: testopsCreateTestcase,
+    testops_create_defect: testopsCreateDefect,
     testops_bulk_create_smoke_suite: testopsBulkCreateSmokeSuite,
   },
   stopWhen: stepCountIs(10),
