@@ -67,7 +67,9 @@ import {
   type ToolUIPart,
   type DynamicToolUIPart,
 } from 'ai';
-import { MessageSquareIcon } from 'lucide-react';
+import { MessageSquareIcon, AlertCircleIcon } from 'lucide-react';
+import { Alert, AlertAction, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
@@ -291,33 +293,41 @@ function ChatView({
 }) {
   const queryClient = useQueryClient();
 
-  const { messages, sendMessage, status, stop, addToolApprovalResponse } =
-    useChat({
-      id,
-      messages: initialMessages,
-      onFinish: () => {
-        void queryClient.invalidateQueries({ queryKey: ['chats'] });
+  const {
+    messages,
+    sendMessage,
+    status,
+    stop,
+    addToolApprovalResponse,
+    error,
+    clearError,
+    regenerate,
+  } = useChat({
+    id,
+    messages: initialMessages,
+    onFinish: () => {
+      void queryClient.invalidateQueries({ queryKey: ['chats'] });
+    },
+    sendAutomaticallyWhen: ({ messages }) =>
+      lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),
+    transport: new DefaultChatTransport({
+      api: '/api/chat',
+      prepareSendMessagesRequest({
+        messages,
+        id,
+      }: {
+        messages: UIMessage[];
+        id: string;
+      }) {
+        return {
+          body: {
+            message: messages[messages.length - 1],
+            id,
+          },
+        };
       },
-      sendAutomaticallyWhen: ({ messages }) =>
-        lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),
-      transport: new DefaultChatTransport({
-        api: '/api/chat',
-        prepareSendMessagesRequest({
-          messages,
-          id,
-        }: {
-          messages: UIMessage[];
-          id: string;
-        }) {
-          return {
-            body: {
-              message: messages[messages.length - 1],
-              id,
-            },
-          };
-        },
-      }),
-    });
+    }),
+  });
 
   function handleSubmit(message: PromptInputMessage) {
     if (!message.text.trim() && !message.files?.length) {
@@ -356,6 +366,25 @@ function ChatView({
         <ConversationScrollButton />
       </Conversation>
 
+      {error ? (
+        <Alert className="mx-4 mb-2 w-auto">
+          <AlertCircleIcon />
+          <AlertTitle>Something went wrong</AlertTitle>
+          <AlertAction>
+            <Button
+              onClick={() => {
+                clearError();
+                void regenerate();
+              }}
+              size="sm"
+              variant="outline"
+            >
+              Retry
+            </Button>
+          </AlertAction>
+        </Alert>
+      ) : null}
+
       <PromptInput
         className="bg-background px-3 pb-3 pt-2"
         globalDrop
@@ -366,7 +395,7 @@ function ChatView({
           <PromptInputAttachmentsDisplay />
           <PromptInputTextarea
             className="min-h-12"
-            placeholder="Напишите сообщение..."
+            placeholder="Type a message..."
           />
         </PromptInputBody>
         <PromptInputFooter>
