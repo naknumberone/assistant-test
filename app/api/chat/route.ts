@@ -59,6 +59,7 @@ export async function POST(req: Request) {
     originalMessages: uiMessages,
     generateMessageId: createIdGenerator({ prefix: 'msg', size: 16 }),
     consumeSseStream: consumeStream,
+    abortSignal: req.signal,
     onFinish: ({ messages: completedMessages }) => {
       void saveChat({ chatId: id, messages: completedMessages });
     },
