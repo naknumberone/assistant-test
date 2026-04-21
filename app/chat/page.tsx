@@ -1,7 +1,5 @@
-import { redirect } from 'next/navigation';
-import { createChat } from '@/lib/chat-store';
+import Chat from '@/components/chat';
 
-export default async function Page() {
-  const id = await createChat();
-  redirect(`/chat/${id}`);
+export default function Page() {
+  return <Chat />;
 }

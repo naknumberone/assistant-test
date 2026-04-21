@@ -2,6 +2,7 @@ import {
   consumeStream,
   createAgentUIStreamResponse,
   createIdGenerator,
+  generateId,
   UIMessage,
   safeValidateUIMessages,
 } from 'ai';
@@ -29,22 +30,15 @@ function upsertIncomingMessage(
 export async function POST(req: Request) {
   const {
     message,
-    id,
+    id: incomingId,
   }: {
     message?: ChatMessage;
     id?: string;
   } = await req.json();
 
-  if (!id) {
-    return Response.json({ error: 'id is required' }, { status: 400 });
-  }
+  const chatId = incomingId ?? generateId();
 
-  const previousMessages = await loadChat(id);
-
-  if (!previousMessages) {
-    return Response.json({ error: 'Chat not found' }, { status: 404 });
-  }
-
+  const previousMessages = (await loadChat(chatId)) ?? [];
   const rawMessages = upsertIncomingMessage(previousMessages, message);
 
   const result = await safeValidateUIMessages<ChatMessage>({
@@ -60,8 +54,14 @@ export async function POST(req: Request) {
     generateMessageId: createIdGenerator({ prefix: 'msg', size: 16 }),
     consumeSseStream: consumeStream,
     abortSignal: req.signal,
+    messageMetadata: ({ part }) => {
+      if (part.type === 'start') {
+        return { chatId };
+      }
+      return undefined;
+    },
     onFinish: ({ messages: completedMessages }) => {
-      void saveChat({ chatId: id, messages: completedMessages });
+      void saveChat({ chatId, messages: completedMessages });
     },
   });
 }

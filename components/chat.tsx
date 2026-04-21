@@ -259,12 +259,13 @@ function MessageParts({
   );
 }
 
-export default function Chat({ id }: { id: string }) {
+export default function Chat({ id }: { id?: string }) {
   const router = useRouter();
 
   const { data, isLoading, isError, error } = useQuery<UIMessage[]>({
     queryKey: ['chat', id],
-    queryFn: () => fetchChatMessages(id),
+    queryFn: () => fetchChatMessages(id as string),
+    enabled: !!id,
     retry: (failureCount, err) => {
       if (err instanceof Error && err.message === CHAT_NOT_FOUND) return false;
       return failureCount < 3;
@@ -277,21 +278,22 @@ export default function Chat({ id }: { id: string }) {
     }
   }, [isError, error, router]);
 
-  if (isLoading || !data) {
+  if (id && (isLoading || !data)) {
     return <main className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col" />;
   }
 
-  return <ChatView id={id} initialMessages={data} />;
+  return <ChatView id={id} initialMessages={data ?? []} />;
 }
 
 function ChatView({
-  id,
+  id: propId,
   initialMessages,
 }: {
-  id: string;
+  id?: string;
   initialMessages: UIMessage[];
 }) {
   const queryClient = useQueryClient();
+  const router = useRouter();
 
   const {
     messages,
@@ -303,26 +305,28 @@ function ChatView({
     clearError,
     regenerate,
   } = useChat({
-    id,
+    id: propId,
     messages: initialMessages,
-    onFinish: () => {
+    onFinish: ({ message, messages: completedMessages }) => {
+      const metadata = message.metadata as { chatId?: string } | undefined;
+      const serverChatId = metadata?.chatId;
+
+      if (serverChatId && !propId) {
+        queryClient.setQueryData(['chat', serverChatId], completedMessages);
+        router.replace(`/chat/${serverChatId}`);
+      }
+
       void queryClient.invalidateQueries({ queryKey: ['chats'] });
     },
     sendAutomaticallyWhen: ({ messages }) =>
       lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),
     transport: new DefaultChatTransport({
       api: '/api/chat',
-      prepareSendMessagesRequest({
-        messages,
-        id,
-      }: {
-        messages: UIMessage[];
-        id: string;
-      }) {
+      prepareSendMessagesRequest({ messages }: { messages: UIMessage[] }) {
         return {
           body: {
             message: messages[messages.length - 1],
-            id,
+            id: propId,
           },
         };
       },
