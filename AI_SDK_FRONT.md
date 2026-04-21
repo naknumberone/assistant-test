@@ -1,328 +1,419 @@
-# AI SDK на фронтенде: анализ того, что вы получаете из коробки
+# AI SDK на фронтенде: что реально даёт SDK в этом проекте
 
-## Введение
+Документ фиксирует, что именно берёт на себя AI SDK на клиенте, если смотреть не на абстрактный пример из документации, а на текущий код проекта в `components/chat.tsx`.
 
-Vercel AI SDK (`ai` + `@ai-sdk/react`) — это библиотека, которая закрывает огромный пласт рутинной работы при создании AI-чатов. Без неё разработчику приходится вручную реализовывать стриминг ответов, парсинг Server-Sent Events, управление состоянием сообщений, обработку tool calls, отображение reasoning-блоков и десятки других вещей. AI SDK делает всё это за вас, предоставляя готовые хуки, типы и утилиты.
-
-В этой статье разберём, какой именно шаблонный код AI SDK позволяет не писать, какие состояния и хелперы доступны из коробки, и почему это хороший выбор для AI-чатов.
+Главная мысль: AI SDK здесь не просто отправляет `fetch` на `/api/chat`, а закрывает целый пласт инфраструктуры вокруг UI-сообщений, стриминга, tool approval и повторной отправки.
 
 ---
 
-## 1. `useChat` — один хук вместо сотен строк
+## 1. `useChat` — центральная точка клиентской логики
 
-Центральный элемент фронтенд-части AI SDK — хук `useChat` из `@ai-sdk/react`. Вот что он возвращает:
+В проекте чат строится вокруг `useChat` из `@ai-sdk/react`:
 
 ```ts
-const { messages, sendMessage, status, stop, addToolApprovalResponse } = useChat({
-  id,
+const {
+  messages,
+  sendMessage,
+  status,
+  stop,
+  addToolApprovalResponse,
+  error,
+  clearError,
+  regenerate,
+} = useChat({
+  id: propId,
   messages: initialMessages,
-  onFinish: () => { /* ... */ },
+  onFinish: ({ message, messages: completedMessages }) => { /* ... */ },
   sendAutomaticallyWhen: ({ messages }) =>
     lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),
   transport: new DefaultChatTransport({ api: '/api/chat', ... }),
 });
 ```
 
-### Что вы получаете без единой строчки своего кода:
+Из коробки хук даёт:
 
-| Возможность | Что делает `useChat` | Что пришлось бы писать вручную |
+| Поле / метод | Что делает в проекте | Что без SDK пришлось бы делать вручную |
 |---|---|---|
-| **`messages`** | Реактивный массив сообщений, обновляемый в реальном времени по мере стриминга | Ручной стейт + парсинг SSE + инкрементальное обновление массива |
-| **`sendMessage`** | Отправка сообщения с автоматической сериализацией, включая файлы | `fetch` + `FormData` + обработка ответа + обновление UI |
-| **`status`** | Текущий статус чата (`streaming`, `awaiting`, `idle`, `error`) | Ручной стейт-машина с несколькими `useState` |
-| **`stop`** | Остановка стриминга одним вызовом | `AbortController` + cleanup + обновление состояния |
-| **`addToolApprovalResponse`** | Ответ на запрос подтверждения инструмента | Кастомный протокол + обработка в обе стороны |
-
-### `sendAutomaticallyWhen` — автоматическая отправка по условию
-
-```ts
-sendAutomaticallyWhen: ({ messages }) =>
-  lastAssistantMessageIsCompleteWithApprovalResponses({ messages }),
-```
-
-Эта одна строчка реализует сложную логику: когда пользователь подтверждает или отклоняет tool call, чат автоматически отправляет результат обратно серверу. Без AI SDK это потребовало бы:
-- отслеживания состояния каждого tool approval
-- проверки, все ли approval обработаны
-- триггера повторной отправки
-- защиты от двойной отправки
+| `messages` | Хранит текущий массив `UIMessage[]` и обновляет его по мере стриминга | Держать свой `useState`, вручную парсить SSE и патчить сообщения по кускам |
+| `sendMessage` | Создаёт новое user-message и отправляет его через transport | Самостоятельно собирать request body, добавлять файлы, синхронизировать optimistic state |
+| `status` | Даёт состояние чата для кнопки submit/stop и общего UI | Вести отдельную state-machine чата |
+| `stop` | Прерывает активный стрим | Держать `AbortController`, чистить состояние и обрабатывать незавершённый ответ |
+| `addToolApprovalResponse` | Записывает ответ пользователя на approval-запрос инструмента | Самостоятельно мутировать tool-part и повторно отправлять его на сервер |
+| `error` / `clearError` | Даёт ошибку чата и возможность сбросить её | Писать отдельный error-state и reset-логику |
+| `regenerate` | Повторяет последний assistant-ответ | Самостоятельно вводить trigger regenerate и следить за правильным сообщением |
 
 ---
 
-## 2. `DefaultChatTransport` — протокол стриминга из коробки
+## 2. Актуальные статусы чата
+
+В текущем SDK `ChatStatus` — это:
 
 ```ts
-transport: new DefaultChatTransport({
-  api: '/api/chat',
-  prepareSendMessagesRequest({ messages, id }) {
-    return { body: { message: messages[messages.length - 1], id } };
-  },
-})
+type ChatStatus = 'submitted' | 'streaming' | 'ready' | 'error';
 ```
 
-`DefaultChatTransport` берёт на себя:
+Это важно, потому что старые формулировки вроде `idle` / `awaiting` для нашего кода уже неверны.
 
-- **SSE-подключение** — установка соединения, парсинг потока событий, реконнект
-- **Протокол сообщений** — сериализация/десериализация в формате, который понимает серверная часть AI SDK
-- **Инкрементальное обновление** — по мере поступления токенов сообщение обновляется в реальном времени
-- **Обработку ошибок** — таймауты, разрывы соединения, некорректные ответы
-
-Без этого пришлось бы писать:
-```ts
-// ~80-120 строк вот такого кода:
-const response = await fetch('/api/chat', { ... });
-const reader = response.body.getReader();
-const decoder = new TextDecoder();
-let buffer = '';
-while (true) {
-  const { done, value } = await reader.read();
-  if (done) break;
-  buffer += decoder.decode(value, { stream: true });
-  // парсинг SSE-формата
-  // обработка каждого типа события
-  // обновление стейта
-  // ...
-}
-```
-
----
-
-## 3. Типизированная модель сообщений: `UIMessage` и parts
-
-AI SDK предоставляет единую типизированную модель сообщений `UIMessage`, где каждое сообщение состоит из типизированных частей (parts):
-
-```ts
-type UIMessage = {
-  id: string;
-  role: 'user' | 'assistant';
-  parts: Array<
-    | { type: 'text'; text: string }
-    | { type: 'reasoning'; text: string; state: 'streaming' | 'complete' }
-    | { type: 'tool'; toolName: string; input: unknown; output: unknown; state: ToolState }
-    | { type: 'file'; ... }
-    | { type: 'source-url'; url: string; title?: string; sourceId: string }
-    | { type: 'source-document'; ... }
-    | { type: 'step-start'; ... }
-    // ...
-  >;
-};
-```
-
-### Почему это важно
-
-Без AI SDK разработчик сам придумывает структуру данных для сообщений. Обычно это заканчивается:
-- Хрупкой структурой `{ role, content: string }`, которая не поддерживает tool calls
-- Отдельными массивами для "обычных" сообщений и tool results
-- Ad-hoc полями типа `isThinking`, `toolResult`, `sources`
-
-AI SDK даёт **единую, расширяемую модель**, где каждый тип контента — reasoning, tool calls, файлы, источники — является first-class citizen.
-
-### Type guards из коробки
-
-```ts
-import { isReasoningUIPart, isToolUIPart, isFileUIPart } from 'ai';
-
-// Вместо ручных проверок:
-message.parts.filter(isReasoningUIPart);  // TypeScript сужает тип автоматически
-message.parts.filter(isToolUIPart);
-```
-
-Без этого пришлось бы писать и поддерживать свои type guards для каждого типа part.
-
----
-
-## 4. Состояния tool calls: полный жизненный цикл
-
-Одна из самых сложных частей AI-чатов — отображение tool calls. AI SDK определяет полный набор состояний:
-
-```ts
-type ToolState =
-  | 'input-streaming'     // Параметры ещё приходят
-  | 'input-available'     // Параметры получены, инструмент выполняется
-  | 'output-available'    // Результат готов
-  | 'output-error'        // Ошибка выполнения
-  | 'approval-requested'  // Ждём подтверждения пользователя
-  | 'approval-responded'  // Пользователь ответил
-  | 'output-denied';      // Пользователь отклонил
-```
-
-Это позволяет точно отображать текущее состояние каждого инструмента:
-
-```tsx
-const statusLabels: Record<ToolState, string> = {
-  'approval-requested': 'Awaiting Approval',
-  'input-available':    'Running',
-  'input-streaming':    'Pending',
-  'output-available':   'Completed',
-  'output-error':       'Error',
-  'output-denied':      'Denied',
-  'approval-responded': 'Responded',
-};
-```
-
-### Tool Approval Flow
-
-AI SDK предоставляет встроенный механизм подтверждения действий пользователем. На фронтенде это выглядит так:
-
-```tsx
-// Поле approval на ToolUIPart содержит всю нужную информацию
-<Confirmation approval={part.approval} state={part.state}>
-  <ConfirmationRequest>
-    <ConfirmationActions>
-      <ConfirmationAction onClick={() =>
-        addToolApprovalResponse({ id: part.approval.id, approved: true })
-      }>
-        Подтвердить
-      </ConfirmationAction>
-    </ConfirmationActions>
-  </ConfirmationRequest>
-</Confirmation>
-```
-
-Без AI SDK пришлось бы:
-1. Придумать протокол для передачи approval-запросов через SSE
-2. Реализовать стейт-машину для каждого tool call
-3. Написать механизм отправки ответа обратно на сервер
-4. Синхронизировать состояние между клиентом и сервером
-
----
-
-## 5. Reasoning (Extended Thinking) — поддержка из коробки
-
-AI SDK типизирует reasoning-части сообщений и предоставляет их состояние:
-
-```ts
-const reasoningParts = message.parts.filter(isReasoningUIPart);
-const reasoningText = reasoningParts.map(part => part.text).join('\n');
-const isStreaming = reasoningParts.some(part => part.state === 'streaming');
-```
-
-Это позволяет строить UI reasoning-блоков (collapsible с анимацией, "Thinking..." шиммер, отображение длительности) без ручного парсинга потока.
-
----
-
-## 6. `ChatStatus` — конечный автомат статусов
-
-Тип `ChatStatus` из AI SDK даёт чёткие состояния чата:
-
-```ts
-type ChatStatus = 'idle' | 'streaming' | 'awaiting' | 'error';
-```
-
-Используется, например, для кнопки отправки/остановки:
+В проекте статус напрямую пробрасывается в `PromptInputSubmit`:
 
 ```tsx
 <PromptInputSubmit onStop={stop} status={status} />
 ```
 
-Компонент автоматически переключается между иконкой отправки и иконкой стопа. Без AI SDK — минимум два `useState` и ручная логика переключения.
+Внутри UI это позволяет:
+
+- показывать спиннер сразу после отправки (`submitted`)
+- переключать кнопку в режим остановки во время генерации (`streaming`)
+- возвращать обычную кнопку отправки после завершения (`ready`)
+- показывать retry-сценарий при ошибке (`error`)
 
 ---
 
-## 7. Утилиты, которые экономят время
+## 3. `DefaultChatTransport` скрывает transport layer
 
-### `generateId` — генерация уникальных ID
-
-```ts
-import { generateId, createIdGenerator } from 'ai';
-
-const id = generateId();
-const messageId = createIdGenerator({ prefix: 'msg', size: 16 });
-```
-
-### `safeValidateUIMessages` — валидация сообщений
+На клиенте используется `DefaultChatTransport`:
 
 ```ts
-const result = await safeValidateUIMessages({ messages: rawMessages });
-const messages = result.success ? result.data : [];
+transport: new DefaultChatTransport({
+  api: '/api/chat',
+  prepareSendMessagesRequest({ messages }: { messages: UIMessage[] }) {
+    return {
+      body: {
+        message: messages[messages.length - 1],
+        id: propId,
+      },
+    };
+  },
+}),
 ```
 
-Безопасная валидация массива сообщений с типизированным результатом. Критически важна при загрузке сохранённых чатов — структура сообщений могла измениться между версиями.
+Что он реально даёт:
 
-### `getToolName` — извлечение имени инструмента
+- отправляет запрос в формате, который понимает `useChat`
+- читает `ReadableStream<UIMessageChunk>` из ответа сервера
+- преобразует чанки в обновляющийся `UIMessage[]`
+- синхронизирует transport с внутренним состоянием `useChat`
+
+Что определяем мы сами через `prepareSendMessagesRequest`:
+
+- отправляем не всю историю, а только последнее сообщение
+- передаём `id` чата отдельным прикладным полем
+- сознательно отбрасываем SDK-поля вроде `trigger` и `messageId`
+
+То есть транспортный слой SDK готовый, но прикладной shape request body у нас свой.
+
+---
+
+## 4. `UIMessage` и `parts` — единая модель для всего UI
+
+На фронте проект рендерит не сырой текст, а `UIMessage.parts`.
+
+Это позволяет в одном сообщении хранить и отображать:
+
+- `text`
+- `reasoning`
+- `tool-*` и `dynamic-tool`
+- `file`
+- `source-document`
+- другие part types, если появятся позже
+
+В `components/chat.tsx` это выглядит так:
+
+```tsx
+const reasoningParts = message.parts.filter(isReasoningUIPart);
+
+{message.parts.map((part, index) => {
+  if (isToolUIPart(part)) {
+    return <ToolPart part={part} ... />;
+  }
+
+  if (isTextUIPart(part)) {
+    return <MessageResponse>{part.text}</MessageResponse>;
+  }
+
+  return null;
+})}
+```
+
+Преимущество такого подхода: UI не разваливается на отдельные массивы вроде "обычные сообщения", "результаты инструментов", "thinking state", "attachments". Всё живёт внутри одного типизированного `UIMessage`.
+
+---
+
+## 5. Type guards позволяют рендерить части без ручного кастинга
+
+Проект использует SDK type guards:
 
 ```ts
-import { getToolName } from 'ai';
-// Корректно работает для обычных и dynamic tools
-const name = getToolName(toolPart);
+import {
+  isFileUIPart,
+  isReasoningUIPart,
+  isTextUIPart,
+  isToolUIPart,
+} from 'ai';
 ```
+
+Они дают сразу две вещи:
+
+- чище код рендера
+- корректное сужение типов в TypeScript
+
+Примеры из проекта:
+
+```ts
+const reasoningParts = message.parts.filter(isReasoningUIPart);
+```
+
+```ts
+if (isFileUIPart(part) || part.type === 'source-document') {
+  attachments.push({ ...part, id: `${message.id}-${index}` });
+}
+```
+
+```ts
+if (isToolUIPart(part)) {
+  return <ToolPart part={part} ... />;
+}
+```
+
+Без этого пришлось бы писать собственные type guards и следить, чтобы они не расходились с SDK-типами.
+
+---
+
+## 6. Tool approval уже встроен в модель чата
+
+Одна из самых полезных частей SDK в этом проекте — встроенный approval-flow.
+
+На клиенте он сводится к двум вещам:
+
+1. tool-part приходит в `messages` уже с состоянием `approval-requested`
+2. по кнопке пользователь вызывает `addToolApprovalResponse(...)`
+
+Пример:
+
+```tsx
+onToolApprovalResponse({
+  id: part.approval.id,
+  approved: true,
+});
+```
+
+или
+
+```tsx
+onToolApprovalResponse({
+  id: part.approval.id,
+  approved: false,
+  reason: 'Rejected by user',
+});
+```
+
+После этого работает ещё одна встроенная часть SDK:
+
+```ts
+sendAutomaticallyWhen: ({ messages }) =>
+  lastAssistantMessageIsCompleteWithApprovalResponses({ messages })
+```
+
+Это значит:
+
+- пользователь отвечает на approval в UI
+- SDK обновляет последний assistant-message
+- как только все approval-ответы на месте, SDK сам инициирует повторную отправку
+
+Без такого набора пришлось бы вручную:
+
+- отслеживать, какие tool approval уже отвечены
+- решать, когда именно делать повторный POST
+- защищаться от двойной отправки
+- синхронизировать локальное и серверное состояние tool-part'ов
+
+---
+
+## 7. `regenerate`, `error`, `clearError` дают готовый retry-flow
+
+В проекте retry выглядит так:
+
+```tsx
+{error ? (
+  <Alert>
+    <Button
+      onClick={() => {
+        clearError();
+        void regenerate();
+      }}
+    >
+      Retry
+    </Button>
+  </Alert>
+) : null}
+```
+
+Что здесь уже делает SDK:
+
+- хранит ошибку последнего запроса
+- позволяет очистить её
+- повторяет последний assistant-response через `regenerate`
+
+Наш backend при этом не различает обычный send и regenerate на уровне body, потому что `prepareSendMessagesRequest` оставляет только `{ message, id }`. Но с точки зрения UI это всё равно даёт готовый повторный запуск без ручной перепаковки истории.
+
+---
+
+## 8. Работа с metadata уже встроена в `onFinish`
+
+После завершения ответа `useChat` отдаёт:
+
+```ts
+onFinish: ({ message, messages: completedMessages }) => {
+  const metadata = message.metadata as { chatId?: string } | undefined;
+  const serverChatId = metadata?.chatId;
+
+  if (serverChatId && !propId) {
+    queryClient.setQueryData(['chat', serverChatId], completedMessages);
+    router.replace(`/chat/${serverChatId}`);
+  }
+
+  void queryClient.invalidateQueries({ queryKey: ['chats'] });
+}
+```
+
+Здесь видно важную особенность AI SDK:
+
+- `message.metadata` уже приехала и привязана к итоговому assistant-message
+- фронт может использовать metadata без ручного парсинга SSE-событий `start` / `message-metadata` / `finish`
+
+То есть transport и `useChat` скрывают низкоуровневую обработку чанков, а UI получает уже собранную структуру.
+
+---
+
+## 9. Attachments и message parts тоже встроены в поток
+
+`sendMessage` в проекте умеет отправлять не только текст:
+
+```ts
+sendMessage({
+  text: message.text || 'Sent with attachments',
+  files: message.files,
+});
+```
+
+Это удобно по двум причинам:
+
+- SDK умеет включать файлы в модель UI-сообщения
+- на чтении эти файлы возвращаются как `FileUIPart`, который можно рендерить теми же компонентами
+
+В проекте вложения берутся из `message.parts` и показываются вместе с сообщением:
+
+```ts
+if (isFileUIPart(part) || part.type === 'source-document') {
+  attachments.push({ ...part, id: `${message.id}-${index}` });
+}
+```
+
+То есть вложения не живут в отдельной параллельной модели данных, а являются частью общего message contract.
+
+---
+
+## 10. Полезные утилиты SDK, которые проект реально использует
 
 ### `lastAssistantMessageIsCompleteWithApprovalResponses`
 
+Готовый предикат для auto-submit после tool approval:
+
 ```ts
-import { lastAssistantMessageIsCompleteWithApprovalResponses } from 'ai';
+lastAssistantMessageIsCompleteWithApprovalResponses({ messages })
 ```
 
-Готовый предикат: "последнее сообщение ассистента завершено и все approval-запросы получили ответы". Логика, которую легко написать с ошибками.
+### `getToolName`
+
+Нормализует имя инструмента для рендера обычных tool-parts:
+
+```ts
+title={getToolName(part)}
+```
+
+### `safeValidateUIMessages`
+
+Используется на сервере для безопасной валидации истории и входящих сообщений:
+
+```ts
+const result = await safeValidateUIMessages({ messages: rawMessages });
+```
+
+Для фронта это тоже важно: клиент получает либо корректный `UIMessage[]`, либо пустой массив, а не частично сломанную структуру.
+
+### `generateId` / `createIdGenerator`
+
+Используются на сервере для chat/message IDs и избавляют от самодельной генерации идентификаторов.
 
 ---
 
-## 8. Серверная часть: `createAgentUIStreamResponse`
+## 11. Где заканчивается SDK и начинается наш код
 
-На сервере AI SDK предоставляет `createAgentUIStreamResponse`, который:
+AI SDK в этом проекте отвечает за:
+
+- модель `UIMessage` / `UIMessagePart`
+- чтение и сборку `UIMessageChunk` в сообщения
+- хук `useChat`
+- transport между клиентом и `/api/chat`
+- tool approval и regenerate API
+- status machine чата
+
+Наш код отвечает за:
+
+- прикладной request body `{ message, id }`
+- хранение истории в `.chats`
+- маршрутизацию по `chatId`
+- UI-компоненты (`Tool`, `Reasoning`, `PromptInput`, `Confirmation`)
+- решение, какие part types реально рендерить
+
+Это хорошая граница ответственности: SDK закрывает протокол и состояние, а проект концентрируется на поведении и интерфейсе.
+
+---
+
+## 12. Связка с сервером
+
+На сервере эту клиентскую модель дополняет `createAgentUIStreamResponse`:
 
 ```ts
 return createAgentUIStreamResponse({
   agent: mainAgent,
   uiMessages,
+  originalMessages: uiMessages,
   generateMessageId: createIdGenerator({ prefix: 'msg', size: 16 }),
   consumeSseStream: consumeStream,
-  onFinish: ({ messages }) => {
-    void saveChat({ chatId: id, messages });
+  abortSignal: req.signal,
+  messageMetadata: ({ part }) => {
+    if (part.type === 'start') {
+      return { chatId };
+    }
+    return undefined;
+  },
+  onFinish: ({ messages: completedMessages }) => {
+    void saveChat({ chatId, messages: completedMessages });
   },
 });
 ```
 
-- Создаёт SSE-поток из работы агента
-- Автоматически сериализует сообщения в формат, который понимает `useChat`
-- Предоставляет callback `onFinish` с финальным состоянием сообщений
-- Поддерживает multi-step агентов (tool loops) без дополнительного кода
+Эта часть важна для фронта, потому что именно она производит тот stream protocol, который понимает `DefaultChatTransport` и `useChat`.
+
+Именно поэтому на клиенте не нужно вручную:
+
+- читать SSE-чанки
+- сопоставлять `text-delta` и `tool-output-*` с сообщениями
+- собирать metadata
+- строить итоговый `UIMessage[]`
 
 ---
 
-## 9. Агентный фреймворк: `ToolLoopAgent`
+## Вывод
 
-```ts
-import { ToolLoopAgent, stepCountIs } from 'ai';
+В текущем проекте AI SDK снимает с фронтенда почти всю сложную инфраструктуру AI-чата:
 
-const mainAgent = new ToolLoopAgent({
-  model,
-  tools: { weather, loadSkill, runTestOpsAgent },
-  stopWhen: stepCountIs(10),
-  instructions: '...',
-});
-```
+- стриминг и сборку сообщений
+- хранение статуса чата
+- tool approval flow
+- regenerate flow
+- типизированную модель message parts
+- transport-слой между UI и сервером
 
-Полноценный агентный цикл (вызов модели → tool call → результат → повторный вызов модели) реализуется в нескольких строчках. Без AI SDK это десятки строк рекурсивной логики с обработкой всех edge cases.
-
----
-
-## 10. Что конкретно не нужно писать
-
-Подведём итог. Вот код, который AI SDK позволяет **не писать**:
-
-| Категория | Примерный объём без AI SDK |
-|---|---|
-| SSE-клиент с реконнектом и парсингом | ~100-150 строк |
-| Стейт-менеджмент сообщений (CRUD + стриминг) | ~80-120 строк |
-| Стейт-машина tool calls (7 состояний × UI) | ~150-200 строк |
-| Tool approval протокол (клиент + сервер) | ~100-150 строк |
-| Типы и type guards для всех part types | ~60-80 строк |
-| Серверный SSE-стриминг из LLM | ~80-100 строк |
-| Агентный цикл (tool loop) | ~100-150 строк |
-| Валидация и генерация ID | ~30-40 строк |
-| **Итого** | **~700-1000 строк** |
-
-И это только инфраструктурный код, без учёта тестов и отладки edge cases.
-
----
-
-## Заключение
-
-AI SDK — это не просто обёртка над `fetch` + SSE. Это полноценный фреймворк, который:
-
-1. **Определяет протокол** — единый формат обмена данными между клиентом и сервером
-2. **Типизирует всё** — от сообщений до состояний tool calls, что ловит ошибки на этапе компиляции
-3. **Управляет сложным состоянием** — стриминг, tool approval, multi-step агенты
-4. **Предоставляет готовые примитивы** — хуки, type guards, утилиты, transport layer
-
-Главное преимущество — разработчик фокусируется на **UI и бизнес-логике**, а не на инфраструктуре стриминга и протоколах обмена данными. Код чата в проекте занимает ~380 строк, включая весь UI. Без AI SDK тот же функционал потребовал бы 1500+ строк, значительная часть которых — хрупкий инфраструктурный код, который сложно тестировать и поддерживать.
+Из-за этого код фронта действительно остаётся в основном про отображение `parts`, кнопки подтверждения, retry и навигацию по `chatId`, а не про низкоуровневую механику SSE и state synchronization.
