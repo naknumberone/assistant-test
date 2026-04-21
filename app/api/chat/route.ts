@@ -3,11 +3,12 @@ import {
   createAgentUIStreamResponse,
   createIdGenerator,
   generateId,
+  TypeValidationError,
   UIMessage,
-  safeValidateUIMessages,
+  validateUIMessages,
 } from 'ai';
 import { mainAgent } from './agents/main-agent';
-import { loadChat, saveChat } from '@/lib/chat-store';
+import { InvalidStoredChatError, loadChat, saveChat } from '@/lib/chat-store';
 
 export const runtime = 'nodejs';
 
@@ -38,14 +39,35 @@ export async function POST(req: Request) {
 
   const chatId = incomingId ?? generateId();
 
-  const previousMessages = (await loadChat(chatId)) ?? [];
+  let previousMessages: UIMessage[];
+  try {
+    previousMessages = (await loadChat(chatId)) ?? [];
+  } catch (error) {
+    if (error instanceof InvalidStoredChatError) {
+      return Response.json(
+        { error: 'Stored chat is invalid and cannot be resumed.' },
+        { status: 422 },
+      );
+    }
+    throw error;
+  }
+
   const rawMessages = upsertIncomingMessage(previousMessages, message);
 
-  const result = await safeValidateUIMessages<ChatMessage>({
-    messages: rawMessages,
-  });
-
-  const uiMessages = result.success ? result.data : [];
+  let uiMessages: UIMessage[];
+  try {
+    uiMessages = await validateUIMessages<ChatMessage>({
+      messages: rawMessages,
+    });
+  } catch (error) {
+    if (error instanceof TypeValidationError) {
+      return Response.json(
+        { error: 'Incoming chat payload is invalid.' },
+        { status: 400 },
+      );
+    }
+    throw error;
+  }
 
   return createAgentUIStreamResponse({
     agent: mainAgent,

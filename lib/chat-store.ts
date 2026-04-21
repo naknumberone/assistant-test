@@ -2,7 +2,12 @@ import "server-only";
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { UIMessage, generateId, safeValidateUIMessages } from "ai";
+import {
+  TypeValidationError,
+  UIMessage,
+  generateId,
+  validateUIMessages,
+} from "ai";
 
 const CHATS_DIR = path.join(process.cwd(), ".chats");
 const DEFAULT_TITLE = "New chat";
@@ -12,6 +17,16 @@ type ChatRecord = {
   title: string;
   messages: UIMessage[];
 };
+
+export class InvalidStoredChatError extends Error {
+  readonly chatId: string;
+
+  constructor(chatId: string, options?: { cause?: unknown }) {
+    super(`Stored chat "${chatId}" is invalid`, options);
+    this.name = "InvalidStoredChatError";
+    this.chatId = chatId;
+  }
+}
 
 function assertValidId(id: string): void {
   if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
@@ -43,8 +58,15 @@ async function readChat(id: string): Promise<ChatRecord | null> {
 
   try {
     const raw = await fs.readFile(chatFilePath(id), "utf8");
-    const data = JSON.parse(raw) as Partial<ChatRecord>;
-    if (!Array.isArray(data.messages)) return null;
+    let data: Partial<ChatRecord>;
+    try {
+      data = JSON.parse(raw) as Partial<ChatRecord>;
+    } catch (error) {
+      throw new InvalidStoredChatError(id, { cause: error });
+    }
+    if (!Array.isArray(data.messages)) {
+      throw new InvalidStoredChatError(id);
+    }
 
     return {
       id,
@@ -83,11 +105,16 @@ export async function loadChat(id: string): Promise<UIMessage[] | null> {
     return null;
   }
 
-  const result = await safeValidateUIMessages({
-    messages: record.messages,
-  });
-
-  return result.success ? result.data : [];
+  try {
+    return await validateUIMessages({
+      messages: record.messages,
+    });
+  } catch (error) {
+    if (error instanceof TypeValidationError) {
+      throw new InvalidStoredChatError(id, { cause: error });
+    }
+    throw error;
+  }
 }
 
 export async function saveChat({

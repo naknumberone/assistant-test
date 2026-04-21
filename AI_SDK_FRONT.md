@@ -331,15 +331,15 @@ lastAssistantMessageIsCompleteWithApprovalResponses({ messages })
 title={getToolName(part)}
 ```
 
-### `safeValidateUIMessages`
+### `validateUIMessages`
 
-Используется на сервере для безопасной валидации истории и входящих сообщений:
+Используется на сервере для валидации истории и входящих сообщений перед дальнейшей обработкой:
 
 ```ts
-const result = await safeValidateUIMessages({ messages: rawMessages });
+const validatedMessages = await validateUIMessages({ messages: rawMessages });
 ```
 
-Для фронта это тоже важно: клиент получает либо корректный `UIMessage[]`, либо пустой массив, а не частично сломанную структуру.
+SDK даёт `validateUIMessages`. В этом проекте при ошибке валидации чат считается повреждённым, и сервер возвращает ошибку.
 
 ### `generateId` / `createIdGenerator`
 

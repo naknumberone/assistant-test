@@ -74,11 +74,15 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
 const CHAT_NOT_FOUND = 'CHAT_NOT_FOUND';
+const INVALID_STORED_CHAT = 'INVALID_STORED_CHAT';
 
 async function fetchChatMessages(id: string): Promise<UIMessage[]> {
   const res = await fetch(`/api/chats/${id}`);
   if (res.status === 404) {
     throw new Error(CHAT_NOT_FOUND);
+  }
+  if (res.status === 422) {
+    throw new Error(INVALID_STORED_CHAT);
   }
   if (!res.ok) {
     throw new Error('Failed to load chat');
@@ -262,12 +266,17 @@ function MessageParts({
 export default function Chat({ id }: { id?: string }) {
   const router = useRouter();
 
-  const { data, isLoading, isError, error } = useQuery<UIMessage[]>({
+  const { data, isLoading, isError, error, refetch } = useQuery<UIMessage[]>({
     queryKey: ['chat', id],
     queryFn: () => fetchChatMessages(id as string),
     enabled: !!id,
     retry: (failureCount, err) => {
-      if (err instanceof Error && err.message === CHAT_NOT_FOUND) return false;
+      if (
+        err instanceof Error &&
+        (err.message === CHAT_NOT_FOUND || err.message === INVALID_STORED_CHAT)
+      ) {
+        return false;
+      }
       return failureCount < 3;
     },
   });
@@ -278,8 +287,35 @@ export default function Chat({ id }: { id?: string }) {
     }
   }, [isError, error, router]);
 
-  if (id && (isLoading || !data)) {
+  if (id && isLoading) {
     return <main className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col" />;
+  }
+
+  if (id && isError && error instanceof Error) {
+    const title =
+      error.message === INVALID_STORED_CHAT
+        ? 'This chat is corrupted and cannot be loaded'
+        : 'Failed to load chat';
+
+    return (
+      <main className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col justify-center px-4">
+        <Alert className="w-full">
+          <AlertCircleIcon />
+          <AlertTitle>{title}</AlertTitle>
+          <AlertAction>
+            <Button
+              onClick={() => {
+                void refetch();
+              }}
+              size="sm"
+              variant="outline"
+            >
+              Retry
+            </Button>
+          </AlertAction>
+        </Alert>
+      </main>
+    );
   }
 
   return <ChatView id={id} initialMessages={data ?? []} />;
